@@ -1,9 +1,9 @@
-"""Grid-search AdamW hyperparameters so the baseline is honestly tuned.
+"""Grid-search AdamW hyperparameters for the baseline.
 
-A Muon "win" against a sandbagged AdamW is meaningless, so the baseline is
-tuned with this sweep (learning rate x weight decay, optionally betas) under
-the same recipe and epoch budget as the benchmark, ranked by time-to-target
-(ties broken by best accuracy). The winning configuration becomes the
+The comparison is only as strong as its baseline, so AdamW is tuned with
+this sweep (learning rate x weight decay, optionally betas) under the same
+recipe and epoch budget as the benchmark, ranked by time-to-target (ties
+broken by best accuracy). The winning configuration becomes the
 ADAMW_DEFAULTS in train.py.
 
     python tune_adamw.py --lrs 1e-3 2e-3 3e-3 --wds 0.005 0.01 0.05 --seed 0

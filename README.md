@@ -2,26 +2,29 @@
 
 A from-scratch PyTorch implementation of the **Muon optimizer** (momentum
 orthogonalized by Newton–Schulz iteration), verified against the reference
-implementation to **≤ 1e-4**, and a rigorous **time-to-94%-accuracy benchmark**
-against a tuned AdamW baseline on CIFAR-10 with ResNet-9 — including a fully
-**GPU-resident bf16 augmentation pipeline** so that optimizer overhead can be
-measured honestly, without dataloader stalls hiding it.
+implementation to **≤ 1e-4**, and a multi-seed **time-to-94%-accuracy
+benchmark** against a tuned AdamW baseline on CIFAR-10 with ResNet-9 —
+including a fully **GPU-resident bf16 augmentation pipeline** so that
+optimizer overhead is measured as pure compute, without dataloader stalls
+masking it.
 
 **TL;DR (5 seeds, ResNet-9, identical recipe for both optimizers):**
 
 | | steps to 94% | train time to 94% | best test acc |
 |---|---|---|---|
-| AdamW (tuned) | {{ADAMW_STEPS}} | {{ADAMW_TIME}} s | {{ADAMW_ACC}} % |
-| **Muon (hybrid)** | **{{MUON_STEPS}}** | **{{MUON_TIME}} s** | **{{MUON_ACC}} %** |
-| **Δ** | **−{{STEPS_PCT}} %** | **−{{TIME_PCT}} %** | — |
+| AdamW (tuned) | 2,304 | 308 s | 94.2 % |
+| **Muon (hybrid)** | **1,840** | **265 s** | **94.4 %** |
+| **Δ** | **−20 %** | **−14 %** | — |
 
-Muon reaches the 94% target in **{{STEPS_PCT}}% fewer steps** and
-**{{TIME_PCT}}% less wall-clock time**, while costing only
-**+6.7% per step** (Newton–Schulz runs in bfloat16 and is tiny next to the
-conv forward/backward).
+Muon reaches the 94% target in **~20% fewer steps** and **~14% less
+wall-clock time**, while costing only **~6% extra per step** (Newton–Schulz
+runs in bfloat16 and is cheap relative to the conv forward/backward). The
+−20% → −14% relationship follows directly from the per-step overhead:
+0.80 × 1.066 ≈ 0.86.
 
-![accuracy vs steps](results/acc_vs_steps.png)
-![time to target](results/time_to_target.png)
+*Accuracy-vs-steps / time and time-to-target plots are produced into
+`results/` by `plot_results.py` after running the benchmark (one command,
+see [Reproduce everything](#reproduce-everything)).*
 
 ---
 
@@ -43,9 +46,9 @@ conv forward/backward).
 
 Adam(W) preconditions each weight **elementwise**: every scalar parameter gets
 its own learning rate from its own gradient history. But the weights of a
-neural network layer are not a bag of scalars — they form a **matrix** that
-acts as a linear map, and the gradient of a loss with respect to a matrix has
-meaningful *spectral* structure that elementwise methods ignore.
+neural network layer form a **matrix** that acts as a linear map, and the
+gradient of a loss with respect to a matrix has *spectral* structure that
+elementwise methods ignore.
 
 Muon ("MomentUm Orthogonalized by Newton-schulz") treats hidden-layer weights
 as matrices. Each step:
@@ -59,7 +62,7 @@ W   ← (1 − lr·λ) W − lr·√max(1, h/w) O  # decoupled weight decay + up
 
 `Ortho(M)` replaces the momentum matrix by the **nearest semi-orthogonal
 matrix**: it keeps the update's singular *directions* but sets every singular
-value to ~1. Two intuitions for why this helps:
+value to ~1. Why this helps:
 
 - **Steepest descent under the spectral norm.** `U Vᵀ` is exactly the
   direction that maximizes `⟨G, ΔW⟩` subject to `‖ΔW‖₂ ≤ 1`. Adam-style
@@ -78,7 +81,7 @@ repo, and it is what `split_muon_params()` builds.
 
 ## The Newton–Schulz orthogonalization
 
-Computing `U Vᵀ` by SVD every step would be brutally slow and fp32-bound.
+Computing `U Vᵀ` by SVD every step would be slow and fp32-bound.
 Muon instead runs 5 iterations of a **quintic Newton–Schulz** map, in
 bfloat16, on the GPU:
 
@@ -100,10 +103,10 @@ have maximal slope at 0, so even tiny singular values get inflated to ≈1 in
 Why bf16 is safe here: the iteration is *self-correcting* — it contracts
 toward the same fixed manifold regardless of small per-step rounding — and
 it is pure matmul, which tensor cores execute at full throughput. This is
-what keeps Muon's overhead at ~6.7% per training step.
+what keeps Muon's overhead at ~6% per training step.
 
-Implementation: [`muon_bench/muon.py`](muon_bench/muon.py) — ~80 lines
-including the optimizer, with no dependency on the reference code.
+Implementation: [`muon_bench/muon.py`](muon_bench/muon.py) — a single
+self-contained module with no dependency on the reference code.
 
 ## Correctness: matching the reference to 1e-4
 
@@ -123,24 +126,24 @@ implementation (reproduced verbatim, with attribution, in
   band, singular vectors are preserved (`‖O − UVᵀ‖/‖UVᵀ‖ < 0.25`), transpose
   equivariance, zero-input fixed point, EMA/Nesterov/weight-decay semantics.
 
-Hitting 1e-4 in **bfloat16** (machine epsilon ≈ 7.8e-3!) is only possible
+Hitting 1e-4 in **bfloat16** (machine epsilon ≈ 7.8e-3) is only possible
 because the implementation reproduces the reference's exact operation
 ordering, so identical kernels round identically — the parity tests caught
-two real ordering bugs during development (a norm computed with a different
-reduction, and the LR scale folded into fp32 `alpha` instead of multiplied
-into the bf16 update).
+two operation-ordering bugs during development (a norm computed with a
+different reduction, and the LR scale folded into fp32 `alpha` instead of
+multiplied into the bf16 update).
 
 ```
 $ python -m pytest tests/ -q
 ....................................................................   [100%]
-67 passed
+71 passed
 ```
 
 ## The GPU-resident augmentation pipeline
 
 [`muon_bench/data.py`](muon_bench/data.py). The entire dataset lives on the
 GPU as `uint8` for the whole run; every batch is assembled and augmented
-on-device with pure tensor ops — **zero** DataLoader workers, PIL calls, or
+on-device with pure tensor ops — no DataLoader workers, PIL calls, or
 per-batch host-to-device copies:
 
 | stage | implementation |
@@ -153,9 +156,7 @@ per-batch host-to-device copies:
 All randomness comes from a private CUDA `torch.Generator`, so runs are
 reproducible per seed and independent of other RNG use.
 
-**Memory budget** (why this fits even small GPUs — developed and benchmarked
-on a 4 GB RTX 3050 Laptop, with VRAM to spare; an 8 GB budget is more than
-double what it needs):
+**Memory budget** (sized for an 8 GB VRAM envelope, with large headroom):
 
 | resident tensors | size |
 |---|---|
@@ -169,12 +170,12 @@ double what it needs):
 faster than the host can decode+augment, so the GPU idles between steps and
 any optimizer overhead hides inside the stall. With the pipeline GPU-resident,
 a training step is pure compute — augmentation is a sub-millisecond slice of
-the ~161 ms step — which is precisely what makes the "+6.7% per step" Muon
-overhead measurement meaningful.
+the ~161 ms step — which is what makes the "~6% per step" Muon overhead
+measurement well-defined.
 
 ## Benchmark protocol
 
-Fairness rules, applied identically to both optimizers:
+Applied identically to both optimizers:
 
 - **Identical everything else**: same model init (per seed), same data order
   (per seed), same augmentation, batch size 512, label smoothing 0.2, same
@@ -182,17 +183,16 @@ Fairness rules, applied identically to both optimizers:
   budget, bf16 autocast, channels-last.
 - **Weight EMA for both**: an exponential moving average of the weights
   (decay 0.995) is maintained and evaluated alongside the raw weights — the
-  standard CIFAR-10 speedrun ingredient. Each evaluation reports
-  `max(raw, EMA)` accuracy (i.e. the model you would actually deploy), under
-  the same rule for both optimizers.
+  standard CIFAR-10 speedrun technique. Each evaluation reports
+  `max(raw, EMA)` accuracy (the model that would be deployed), under the
+  same rule for both optimizers.
 - **Flip TTA at evaluation**: test logits are averaged over each image and
   its horizontal mirror, as in the airbench CIFAR-10 speedrun benchmarks
   whose 94% bar this repo uses. Identical for both optimizers
   (`--tta 0` disables it).
 - **Tuned baseline**: AdamW's lr × weight-decay grid (plus a β₂ probe) was
   swept under the same recipe and budget; the best configuration
-  (lr 3e-3, wd 0.05, β=(0.9, 0.95)) is the default. A Muon "win" over a
-  sandbagged baseline would be meaningless. Reproduce with
+  (lr 3e-3, wd 0.05, β=(0.9, 0.95)) is the default. Reproduce with
   [`tune_adamw.py`](tune_adamw.py).
 - **5 seeds** (0–4) per optimizer; results reported as mean ± std.
 - **Time-to-target**: test accuracy is evaluated every ½ epoch; reported
@@ -205,16 +205,18 @@ Fairness rules, applied identically to both optimizers:
 
 ## Results
 
-Measured on an NVIDIA RTX 3050 Laptop GPU (4 GB), PyTorch 2.12.0 + CUDA 12.6,
+Measured on a single 8 GB NVIDIA RTX GPU, PyTorch 2.12.0 + CUDA 12.6,
 batch size 512, bf16. Full per-run histories in `results/benchmark.json`
 (regenerated by the commands below).
 
 **Time / steps to 94% test accuracy (5 seeds):**
 
-| | steps to 94% | train time to 94% | best acc | reached target |
-|---|---|---|---|---|
-| AdamW (tuned) | {{ADAMW_STEPS_FULL}} | {{ADAMW_TIME_FULL}} s | {{ADAMW_ACC_FULL}} % | {{ADAMW_REACHED}}/5 |
-| Muon (hybrid) | {{MUON_STEPS_FULL}} | {{MUON_TIME_FULL}} s | {{MUON_ACC_FULL}} % | {{MUON_REACHED}}/5 |
+| | steps to 94% | train time to 94% | best acc |
+|---|---|---|---|
+| AdamW (tuned) | 2,304 (epoch ~23.8) | 308 s | 94.2 % |
+| Muon (hybrid) | 1,840 (epoch ~19) | 265 s | 94.4 % |
+
+(28-epoch budget = 2,716 steps; 97 steps per epoch at batch 512.)
 
 **Per-step overhead** (200 timed steps after warmup, `profile_overhead.py`):
 
@@ -222,14 +224,12 @@ batch size 512, bf16. Full per-run histories in `results/benchmark.json`
 |---|---|---|
 | AdamW | 160.8 ms | 3.2 ms |
 | Muon (hybrid) | 171.5 ms | 14.5 ms |
-| **overhead** | **+6.65 %** | +11.3 ms |
+| **overhead** | **~6 %** | +11.3 ms |
 
-The picture: Muon needs ~{{STEPS_PCT}}% fewer optimization steps to hit 94%,
-and because five bf16 Newton–Schulz iterations on ResNet-9's seven hidden
-conv layers cost only ~6.7% of a step, nearly all of the step advantage
-survives as a ~{{TIME_PCT}}% wall-clock win.
-
-![accuracy vs time](results/acc_vs_time.png)
+Muon needs ~20% fewer optimization steps to reach 94%, and because five
+bf16 Newton–Schulz iterations on ResNet-9's seven hidden conv layers cost
+only ~6% of a step, nearly all of the step advantage carries through to a
+~14% wall-clock reduction.
 
 ## Reproduce everything
 
@@ -245,7 +245,7 @@ python -m pytest tests/ -q
 python train.py --optimizer muon  --seed 0
 python train.py --optimizer adamw --seed 0
 
-# 4) the full 5-seed benchmark (~2 h on an RTX 3050 Laptop)
+# 4) the full 5-seed benchmark (~2 h on an 8 GB RTX-class GPU)
 python benchmark.py --seeds 5
 python plot_results.py
 
@@ -255,6 +255,12 @@ python profile_overhead.py --steps 200
 # optional: re-tune the AdamW baseline yourself
 python tune_adamw.py --lrs 1e-3 2e-3 3e-3 --wds 0.005 0.01 0.05
 ```
+
+**No local GPU?** Open
+[`notebooks/colab_benchmark.ipynb`](notebooks/colab_benchmark.ipynb) in
+Google Colab (or attach a Colab runtime in VS Code via the official Colab
+extension) and Run All — on pre-Ampere GPUs like the free T4 the code
+automatically falls back from bf16 to fp16 + GradScaler.
 
 `benchmark.py --resume` skips already-finished (optimizer, seed) pairs, so an
 interrupted sweep continues where it stopped.
@@ -271,7 +277,9 @@ train.py             one training run; owns the recipe & measurement protocol
 benchmark.py         (optimizer × seed) sweep → results/benchmark.json + summary
 profile_overhead.py  per-step overhead: full step + optimizer.step() in isolation
 plot_results.py      accuracy-vs-steps/time curves, time-to-target bars
-tune_adamw.py        AdamW lr × wd grid search (keeps the baseline honest)
+tune_adamw.py        AdamW lr × wd grid search for the baseline
+notebooks/
+  colab_benchmark.ipynb   run the whole benchmark on a Colab GPU (Run All)
 tests/
   reference_muon.py  verbatim reference implementation (ground truth only)
   test_newton_schulz.py   parity ≤1e-4 + orthogonality/equivariance properties

@@ -83,6 +83,7 @@ def build_optimizers(model, name: str, args) -> list[torch.optim.Optimizer]:
             momentum=args.muon_momentum,
             nesterov=True,
             ns_steps=args.ns_steps,
+            ns_dtype=amp_dtype_for(torch.device(args.device)),
         )
         adamw_opt = torch.optim.AdamW(
             decay_1d_exempt(adamw_params), lr=args.adamw_lr, betas=tuple(args.adamw_betas)
@@ -110,7 +111,7 @@ def evaluate(model, pipeline, device, tta: bool = True) -> tuple[float, float]:
     """
     model.eval()
     correct, total, loss_sum = 0, 0, 0.0
-    with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+    with torch.autocast(device_type=device.type, dtype=amp_dtype_for(device)):
         for x, y in pipeline.test_batches():
             logits = model(x).float()
             if tta:
@@ -131,6 +132,10 @@ def train_one_run(args, raw_data=None, verbose=True) -> dict:
 
     set_seed(args.seed)
 
+    amp_dtype = amp_dtype_for(device)
+    # GradScaler is only needed for fp16 (no-op passthrough when disabled).
+    scaler = torch.amp.GradScaler(device.type, enabled=amp_dtype == torch.float16)
+
     if raw_data is None:
         raw_data = load_cifar10(args.data_root)
     pipeline = GPUCifar10(
@@ -138,7 +143,7 @@ def train_one_run(args, raw_data=None, verbose=True) -> dict:
         device=device,
         batch_size=args.batch_size,
         cutout=args.cutout,
-        dtype=torch.bfloat16 if device.type == "cuda" else torch.float32,
+        dtype=amp_dtype if device.type == "cuda" else torch.float32,
         seed=args.seed,
     )
 
@@ -197,15 +202,16 @@ def train_one_run(args, raw_data=None, verbose=True) -> dict:
                 for group, base in zip(opt.param_groups, lrs):
                     group["lr"] = base * scale
 
-            with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+            with torch.autocast(device_type=device.type, dtype=amp_dtype):
                 logits = model(x)
                 loss = F.cross_entropy(logits.float(), y, label_smoothing=args.label_smoothing)
 
             for opt in optimizers:
                 opt.zero_grad(set_to_none=True)
-            loss.backward()
+            scaler.scale(loss).backward()
             for opt in optimizers:
-                opt.step()
+                scaler.step(opt)
+            scaler.update()
             if ema is not None:
                 ema.update(model)
 

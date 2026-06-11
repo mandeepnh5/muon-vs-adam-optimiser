@@ -8,10 +8,10 @@ per-sample Python loops.
 
 Why: on small models like ResNet-9 a conventional CPU dataloader is the
 bottleneck -- the GPU finishes a step faster than the CPU can decode and
-augment the next batch, so any *optimizer* overhead is hidden behind data
-stalls and can't be measured honestly. With the pipeline GPU-resident, step
-time is pure compute, which is what lets this repo (a) report a fair
-optimizer overhead number for Muon and (b) saturate a small laptop GPU.
+augment the next batch, so any *optimizer* overhead disappears into data
+stalls. With the pipeline GPU-resident, step time is pure compute, which is
+what lets this repo measure Muon's per-step overhead directly and keep the
+GPU saturated.
 
 Memory budget (uint8, batch 512):
     train images padded to 40x40:  50,000 * 3 * 40 * 40 = 229 MB
@@ -20,8 +20,8 @@ Memory budget (uint8, batch 512):
     ----------------------------------------------------------
     total pipeline residency:                           ~260 MB
 
-which fits comfortably alongside the ~6.5M-param model + activations even
-on a 4 GB GPU (and trivially within an 8 GB VRAM budget).
+which fits comfortably alongside the ~6.5M-param model and its activations
+within an 8 GB VRAM budget.
 """
 
 from __future__ import annotations

@@ -27,7 +27,7 @@ import torch
 import torch.nn.functional as F
 
 from muon_bench import GPUCifar10, build_resnet9, env_info, load_cifar10, save_json, set_seed
-from train import build_optimizers, make_parser
+from train import amp_dtype_for, build_optimizers, make_parser
 
 
 def profile_optimizer(name: str, args, raw_data, steps: int, warmup: int) -> dict:
@@ -35,7 +35,8 @@ def profile_optimizer(name: str, args, raw_data, steps: int, warmup: int) -> dic
     torch.backends.cudnn.benchmark = True
     set_seed(0)
 
-    pipeline = GPUCifar10(*raw_data, device=device, batch_size=args.batch_size, seed=0)
+    amp_dtype = amp_dtype_for(device)
+    pipeline = GPUCifar10(*raw_data, device=device, batch_size=args.batch_size, dtype=amp_dtype, seed=0)
     model = build_resnet9(device)
     optimizers = build_optimizers(model, name, args)
 
@@ -49,7 +50,7 @@ def profile_optimizer(name: str, args, raw_data, steps: int, warmup: int) -> dic
 
     def one_step(record: bool):
         x, y = next(batch_iter)
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+        with torch.autocast(device_type=device.type, dtype=amp_dtype):
             loss = F.cross_entropy(model(x).float(), y, label_smoothing=0.1)
         for opt in optimizers:
             opt.zero_grad(set_to_none=True)

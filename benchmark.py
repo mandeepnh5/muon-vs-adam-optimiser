@@ -96,7 +96,7 @@ def main():
     parser.add_argument("--out-dir", default="results")
     parser.add_argument("--resume", action="store_true", help="skip (optimizer, seed) pairs already in benchmark.json")
     parser.add_argument("--cooldown", type=int, default=30,
-                        help="seconds to idle the GPU between runs (laptop thermal fairness)")
+                        help="seconds to idle the GPU between runs (thermal consistency)")
     bench_args, rest = parser.parse_known_args()
 
     train_parser = make_parser()
@@ -114,7 +114,7 @@ def main():
     raw_data = load_cifar10("./data")
 
     # Interleave optimizers within each seed (rather than all-A-then-all-B):
-    # on laptop GPUs sustained load causes thermal throttling, and interleaving
+    # sustained load causes thermal throttling on many GPUs, and interleaving
     # spreads any clock drift evenly across both optimizers.
     target_acc = None
     first = True
