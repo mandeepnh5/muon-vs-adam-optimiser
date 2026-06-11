@@ -293,14 +293,14 @@ tests/
 | | AdamW baseline | Muon run |
 |---|---|---|
 | hidden conv weights | AdamW lr 3e-3, wd 0.05, β (0.9, 0.95) | **Muon lr 0.05, wd 0.05, momentum 0.95, Nesterov, 5 NS steps** |
-| stem / head / BN / biases | same AdamW | AdamW lr 3e-3, wd 0.05 (0 on 1D params) |
+| stem / head / BN / biases | Same AdamW | AdamW lr 3e-3, wd 0.05 (0 on 1D params) |
 | schedule | 10% linear warmup → linear decay to 0 | same |
-| batch / epochs | 512 / 28 | same |
-| augmentation | pad-4 crop, flip, cutout-8 | same |
-| label smoothing | 0.2 | same |
-| weight EMA | decay 0.995, eval reports max(raw, EMA) | same |
-| evaluation | flip TTA (airbench-style) | same |
-| precision | bf16 autocast, channels-last | same |
+| batch / epochs | 512 / 28 | Same |
+| augmentation | pad-4 crop, flip, cutout-8 | Same |
+| label smoothing | 0.2 | Same |
+| weight EMA | decay 0.995, eval reports max(raw, EMA) | Same |
+| evaluation | flip TTA (airbench-style) | Same |
+| precision | bf16 autocast, channels-last | Same |
 
 ## References
 
