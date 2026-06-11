@@ -1,0 +1,18 @@
+# data & artifacts
+data/
+results/*.json
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# keep the plots that the README embeds
+!results/*.png
+
+# editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
